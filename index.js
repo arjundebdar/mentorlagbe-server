@@ -59,6 +59,7 @@ app.get("/users", async (req, res) => {
 });
 
 // Tution API Starts
+
 // Post a new tuition
 app.post("/tuitions", upload.single("image"), async (req, res) => {
   try {
@@ -212,6 +213,34 @@ app.patch("/tuitions/:id", async (req, res) => {
     });
   }
 });
+
+// delete Tuitons by id;
+app.delete('/tuitions/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await tuitionsCollection.deleteOne({
+      _id: new ObjectId(id),
+    });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).send({
+        message: "Tuition not found",
+      });
+    }
+
+    res.send({
+      success: true,
+      message: "Tuition deleted successfully",
+    });
+
+  } catch (error) {
+    res.status(500).send({
+      message: "Failed to delete tuition",
+      error: error.message,
+    });
+  }
+})
 
 // Tuition ends
 
