@@ -242,6 +242,48 @@ app.delete('/tuitions/:id', async (req, res) => {
   }
 })
 
+// toggle active status 
+app.patch("/tuitions/:id/status", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { isActive } = req.body;
+
+    if (typeof isActive !== "boolean") {
+      return res.status(400).send({
+        message: "Invalid status value",
+      });
+    }
+
+    const result = await tuitionsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          isActive: isActive,
+        },
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).send({
+        message: "Tuition not found",
+      });
+    }
+
+    res.send({
+      success: true,
+      message: "Status updated successfully",
+      isActive,
+    });
+
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).send({
+      message: "Failed to update tuition status",
+    });
+  }
+});
+
 // Tuition ends
 
 
