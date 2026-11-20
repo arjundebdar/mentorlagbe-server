@@ -48,6 +48,262 @@ app.get("/", (req, res) => {
   res.send("Mentor Lagbe Server Is Running!");
 });
 
+// Admin sections Server Start
+
+app.get(
+  "/admin-overview",
+  async (req, res) => {
+    try {
+      // 1. Count total users
+      const totalUsers = await usersCollection.countDocuments();
+
+      // 2. Count students
+      const totalStudents = await usersCollection.countDocuments({
+        role: "student",
+      });
+
+      // 3. Count tutors
+      const totalTutors = await usersCollection.countDocuments({
+        role: "tutor",
+      });
+
+      // 4. Count total tuitions
+      const totalTuitions = await tuitionsCollection.countDocuments();
+
+      // 5. Count pending tuitions
+      const pendingTuitions = await tuitionsCollection.countDocuments({
+        approvalStatus: "pending",
+      });
+
+      // 6. Calculate successful payment revenue
+      const revenueResult = await paymentsCollection.aggregate([
+        {
+          $match: {
+            status: {
+              $in: ["paid", "completed", "succeeded"],
+            },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            totalRevenue: {
+              $sum: {
+                $convert: {
+                  input: "$amount",
+                  to: "double",
+                  onError: 0,
+                  onNull: 0,
+                },
+              },
+            },
+          },
+        },
+      ]).toArray();
+
+      const totalRevenue = revenueResult[0]?.totalRevenue || 0;
+
+      // 7. Get latest 5 registered users
+      const recentUsers = await usersCollection
+        .find(
+          {},
+          {
+            projection: {
+              name: 1,
+              email: 1,
+              role: 1,
+              createdAt: 1,
+            },
+          }
+        )
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .toArray();
+
+      // 8. Get latest 5 pending tuitions
+      const pendingTuitionList = await tuitionsCollection
+        .find({
+          status: "pending",
+        })
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .toArray();
+
+      // 9. Send response
+      res.status(200).send({
+        success: true,
+
+        stats: {
+          totalUsers,
+          totalStudents,
+          totalTutors,
+          totalTuitions,
+          pendingTuitions,
+          totalRevenue,
+        },
+
+        recentUsers,
+
+        pendingTuitionList,
+      });
+
+    } catch (error) {
+      console.error("Admin overview error:", error);
+
+      res.status(500).send({
+        success: false,
+        message: "Failed to fetch admin overview",
+      });
+    }
+  }
+);
+
+
+// get all tutions 
+
+app.get("/admin/tuitions", async (req, res) => {
+  try {
+    const tuitions = await tuitionsCollection
+      .find({})
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.status(200).send({
+      success: true,
+      total: tuitions.length,
+      tuitions,
+    });
+
+  } catch (error) {
+    console.error("Get admin tuitions error:", error);
+
+    res.status(500).send({
+      success: false,
+      message: "Failed to fetch tuitions",
+    });
+  }
+}
+);
+
+// Aprove,reject and view
+
+
+
+app.patch("/tuitions/:id/status", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { approvalStatus, isActive } = req.body;
+
+    // 1. Validate ID
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({
+        success: false,
+        message: "Invalid tuition ID",
+      });
+    }
+
+    // 2. Find tuition
+    const tuition = await tuitionsCollection.findOne({
+      _id: new ObjectId(id),
+    });
+
+    if (!tuition) {
+      return res.status(404).send({
+        success: false,
+        message: "Tuition not found",
+      });
+    }
+
+    // 3. Prepare update
+    const updateFields = {
+      updatedAt: new Date(),
+    };
+
+    // 4. Approve / Reject
+    if (approvalStatus !== undefined) {
+      if (
+        !["approved", "rejected"].includes(approvalStatus)
+      ) {
+        return res.status(400).send({
+          success: false,
+          message: "Invalid approval status",
+        });
+      }
+
+      updateFields.approvalStatus = approvalStatus;
+
+      // Rejected tuition cannot remain active
+      if (approvalStatus === "rejected") {
+        updateFields.isActive = false;
+      }
+    }
+
+    // 5. Active / Inactive
+    else if (isActive !== undefined) {
+      if (typeof isActive !== "boolean") {
+        return res.status(400).send({
+          success: false,
+          message: "isActive must be boolean",
+        });
+      }
+
+      if (
+        tuition.approvalStatus !== "approved"
+      ) {
+        return res.status(400).send({
+          success: false,
+          message: "Only approved tuitions can be activated",
+        });
+      }
+
+      updateFields.isActive = isActive;
+    }
+
+    // 6. Reject empty update
+    else {
+      return res.status(400).send({
+        success: false,
+        message: "Nothing to update",
+      });
+    }
+
+    // 7. Update MongoDB
+    const result = await tuitionsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: updateFields,
+      }
+    );
+
+    if (!result.matchedCount) {
+      return res.status(404).send({
+        success: false,
+        message: "Tuition not found",
+      });
+    }
+
+    res.status(200).send({
+      success: true,
+      message: "Tuition updated successfully",
+      modifiedCount: result.modifiedCount,
+    });
+
+  } catch (error) {
+    console.error("Update tuition status error:", error);
+
+    res.status(500).send({
+      success: false,
+      message: "Failed to update tuition",
+    });
+  }
+}
+);
+
+
+
+
+// Admin sections Server Ends
+
 // user section api
 
 
@@ -210,6 +466,43 @@ app.patch("/tuitions/:id", async (req, res) => {
 
     res.status(500).send({
       message: "Failed to update tuition",
+    });
+  }
+});
+// Get Tuition Details by ID
+app.get("/tuitions/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({
+        success: false,
+        message: "Invalid tuition ID",
+      });
+    }
+
+    const tuition = await tuitionsCollection.findOne({
+      _id: new ObjectId(id),
+    });
+
+    if (!tuition) {
+      return res.status(404).send({
+        success: false,
+        message: "Tuition not found",
+      });
+    }
+
+    res.status(200).send({
+      success: true,
+      tuition,
+    });
+
+  } catch (error) {
+    console.error("Get tuition details error:", error);
+
+    res.status(500).send({
+      success: false,
+      message: "Failed to fetch tuition details",
     });
   }
 });
