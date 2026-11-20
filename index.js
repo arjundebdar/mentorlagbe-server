@@ -10,7 +10,7 @@ const port = process.env.PORT || 5000;
 
 // Middleware
 app.use(cors({
-  origin: "http://localhost:3000",
+  origin: process.env.DB_CLIENT_URL,
   credentials: true,
 }));
 app.use(express.json());
@@ -221,3 +221,4 @@ app.patch("/tuitions/:id", async (req, res) => {
 app.listen(port, () => {
   console.log(`MentorLagbe server running on port ${port}`);
 });
+export default app;
