@@ -3,7 +3,7 @@ import "dotenv/config";
 import cors from "cors";
 import { MongoClient, ObjectId } from 'mongodb';
 import multer from "multer";
-
+import Stripe from "stripe";
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -24,6 +24,8 @@ const upload = multer({
 
 // Mongodb connection
 const client = new MongoClient(`mongodb://${process.env.MONGODB_USER_ID}:${process.env.MONGODB_PASSWORD}@ac-fnhayin-shard-00-00.1gmbeud.mongodb.net:27017,ac-fnhayin-shard-00-01.1gmbeud.mongodb.net:27017,ac-fnhayin-shard-00-02.1gmbeud.mongodb.net:27017/?ssl=true&replicaSet=atlas-ki9uz8-shard-0&authSource=admin`);
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 export async function connectToMongoDB() {
   try {
@@ -48,114 +50,114 @@ app.get("/", (req, res) => {
   res.send("Mentor Lagbe Server Is Running!");
 });
 
+
+
 // Admin sections Server Start
 
-app.get(
-  "/admin-overview",
-  async (req, res) => {
-    try {
-      // 1. Count total users
-      const totalUsers = await usersCollection.countDocuments();
+app.get("/admin-overview", async (req, res) => {
+  try {
+    // 1. Count total users
+    const totalUsers = await usersCollection.countDocuments();
 
-      // 2. Count students
-      const totalStudents = await usersCollection.countDocuments({
-        role: "student",
-      });
+    // 2. Count students
+    const totalStudents = await usersCollection.countDocuments({
+      role: "student",
+    });
 
-      // 3. Count tutors
-      const totalTutors = await usersCollection.countDocuments({
-        role: "tutor",
-      });
+    // 3. Count tutors
+    const totalTutors = await usersCollection.countDocuments({
+      role: "tutor",
+    });
 
-      // 4. Count total tuitions
-      const totalTuitions = await tuitionsCollection.countDocuments();
+    // 4. Count total tuitions
+    const totalTuitions = await tuitionsCollection.countDocuments();
 
-      // 5. Count pending tuitions
-      const pendingTuitions = await tuitionsCollection.countDocuments({
-        approvalStatus: "pending",
-      });
+    // 5. Count pending tuitions
+    const pendingTuitions = await tuitionsCollection.countDocuments({
+      approvalStatus: "pending",
+    });
 
-      // 6. Calculate successful payment revenue
-      const revenueResult = await paymentsCollection.aggregate([
-        {
-          $match: {
-            status: {
-              $in: ["paid", "completed", "succeeded"],
-            },
+    // 6. Calculate successful payment revenue
+    const revenueResult = await paymentsCollection.aggregate([
+      {
+        $match: {
+          status: {
+            $in: ["paid", "completed", "succeeded"],
           },
         },
-        {
-          $group: {
-            _id: null,
-            totalRevenue: {
-              $sum: {
-                $convert: {
-                  input: "$amount",
-                  to: "double",
-                  onError: 0,
-                  onNull: 0,
-                },
+      },
+      {
+        $group: {
+          _id: null,
+          totalRevenue: {
+            $sum: {
+              $convert: {
+                input: "$amount",
+                to: "double",
+                onError: 0,
+                onNull: 0,
               },
             },
           },
         },
-      ]).toArray();
+      },
+    ]).toArray();
 
-      const totalRevenue = revenueResult[0]?.totalRevenue || 0;
+    const totalRevenue = revenueResult[0]?.totalRevenue || 0;
 
-      // 7. Get latest 5 registered users
-      const recentUsers = await usersCollection
-        .find(
-          {},
-          {
-            projection: {
-              name: 1,
-              email: 1,
-              role: 1,
-              createdAt: 1,
-            },
-          }
-        )
-        .sort({ createdAt: -1 })
-        .limit(5)
-        .toArray();
+    // 7. Get latest 5 registered users
+    const recentUsers = await usersCollection
+      .find(
+        {},
+        {
+          projection: {
+            name: 1,
+            email: 1,
+            role: 1,
+            createdAt: 1,
+          },
+        }
+      )
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .toArray();
 
-      // 8. Get latest 5 pending tuitions
-      const pendingTuitionList = await tuitionsCollection
-        .find({
-          status: "pending",
-        })
-        .sort({ createdAt: -1 })
-        .limit(5)
-        .toArray();
+    // 8. Get latest 5 pending tuitions
+    const pendingTuitionList = await tuitionsCollection
+      .find({
+        status: "pending",
+      })
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .toArray();
 
-      // 9. Send response
-      res.status(200).send({
-        success: true,
+    // 9. Send response
+    res.status(200).send({
+      success: true,
 
-        stats: {
-          totalUsers,
-          totalStudents,
-          totalTutors,
-          totalTuitions,
-          pendingTuitions,
-          totalRevenue,
-        },
+      stats: {
+        totalUsers,
+        totalStudents,
+        totalTutors,
+        totalTuitions,
+        pendingTuitions,
+        totalRevenue,
+      },
 
-        recentUsers,
+      recentUsers,
 
-        pendingTuitionList,
-      });
+      pendingTuitionList,
+    });
 
-    } catch (error) {
-      console.error("Admin overview error:", error);
+  } catch (error) {
+    console.error("Admin overview error:", error);
 
-      res.status(500).send({
-        success: false,
-        message: "Failed to fetch admin overview",
-      });
-    }
+    res.status(500).send({
+      success: false,
+      message: "Failed to fetch admin overview",
+    });
   }
+}
 );
 
 
@@ -300,11 +302,75 @@ app.patch("/tuitions/:id/status", async (req, res) => {
 );
 
 
+// ADMIN TRANSACTIONS API
+
+app.get("/admin/transactions", async (req, res) => {
+  try {
+    // Only admin can access transactions
+    if (req.user.role !== "admin") {
+      return res.status(403).send({
+        success: false,
+        message: "Access denied. Admin only.",
+      });
+    }
+
+    const transactions = await paymentsCollection
+      .find({})
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    // Calculate transaction statistics
+    const totalTransactions = transactions.length;
+
+    const successfulTransactions = transactions.filter(
+      (payment) =>
+        payment.status === "paid" ||
+        payment.paymentStatus === "paid"
+    );
+
+    const failedTransactions = transactions.filter(
+      (payment) =>
+        payment.status === "failed" ||
+        payment.paymentStatus === "failed"
+    );
+
+    const pendingTransactions = transactions.filter(
+      (payment) =>
+        payment.status === "pending" ||
+        payment.paymentStatus === "pending"
+    );
+
+    const totalRevenue = successfulTransactions.reduce(
+      (total, payment) => total + Number(payment.amount || 0),
+      0
+    );
+
+    res.status(200).send({
+      success: true,
+      stats: {
+        totalTransactions,
+        successfulTransactions: successfulTransactions.length,
+        failedTransactions: failedTransactions.length,
+        pendingTransactions: pendingTransactions.length,
+        totalRevenue,
+      },
+      transactions,
+    });
+  } catch (error) {
+    console.error("Admin transactions error:", error);
+
+    res.status(500).send({
+      success: false,
+      message: "Failed to fetch transactions",
+    });
+  }
+});
+
 
 
 // Admin sections Server Ends
 
-// user section api
+// user section api Start
 
 
 app.get("/users", async (req, res) => {
@@ -313,6 +379,92 @@ app.get("/users", async (req, res) => {
   res.status(200).send(users);
 
 });
+
+
+// Update User Role
+app.patch("/users/role/:email", async (req, res) => {
+  try {
+    const email = decodeURIComponent(req.params.email);
+    const { role } = req.body;
+
+    if (!["student", "tutor", "admin"].includes(role)) {
+      return res.status(400).send({
+        message: "Invalid user role",
+      });
+    }
+
+    const result = await usersCollection.updateOne(
+      { email: email },
+      {
+        $set: {
+          role: role,
+        },
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).send({
+        message: "User not found",
+      });
+    }
+
+    res.send({
+      success: true,
+      message: "User role updated successfully",
+    });
+
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).send({
+      message: "Failed to update user role",
+    });
+  }
+});
+// Suspend / Activate User
+app.patch("/users/:email", async (req, res) => {
+  try {
+    const email = decodeURIComponent(req.params.email);
+    const { isActive } = req.body;
+
+    if (typeof isActive !== "boolean") {
+      return res.status(400).send({
+        message: "Invalid user status",
+      });
+    }
+
+    const result = await usersCollection.updateOne(
+      { email: email },
+      {
+        $set: {
+          isActive: isActive,
+        },
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).send({
+        message: "User not found",
+      });
+    }
+
+    res.send({
+      success: true,
+      message: isActive
+        ? "User activated successfully"
+        : "User suspended successfully",
+    });
+
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).send({
+      message: "Failed to update user status",
+    });
+  }
+});
+
+// user api Ends
 
 // Tution API Starts
 
@@ -408,6 +560,104 @@ app.get("/tuitions/my-tuitions", async (req, res) => {
   res.status(200).send(tuitions);
 
 });
+// Get Approved and Active Tuitions
+app.get("/tuitions", async (req, res) => {
+  try {
+    const {
+      search = "",
+      classLevel = "",
+      mode = "",
+    } = req.query;
+
+    const query = {
+      approvalStatus: "approved",
+      isActive: true,
+    };
+
+    if (search) {
+      query.$or = [
+        { title: { $regex: search, $options: "i" } },
+        { subject: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    if (classLevel) {
+      query.classLevel = classLevel;
+    }
+
+    if (mode) {
+      query.mode = mode;
+    }
+
+    const result = await tuitionsCollection
+      .find(query)
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({
+      message: "Failed to fetch tuitions",
+    });
+  }
+});
+
+// TUTOR DASHBOARD STATISTICS
+// GET /dashboard/tutor-stats?email=tutor@example.com
+
+app.get("/tutor-stats", async (req, res) => {
+  try {
+    const email = req.query.email;
+
+    if (!email) {
+      return res.status(400).send({
+        success: false,
+        message: "Tutor email is required",
+      });
+    }
+
+    // 1. Total Tuitions
+    const totalTuitions = await tuitionsCollection.countDocuments({
+      tutorEmail: email,
+    });
+
+    // 2. Approved and Active Tuitions
+    const approvedTuitions = await tuitionsCollection.countDocuments({
+      tutorEmail: email,
+      approvalStatus: "approved",
+      isActive: true,
+    });
+
+    // 3. Total Applicants
+    const totalApplicants = await applicationsCollection.countDocuments({
+      tutorEmail: email,
+    });
+
+    // 4. Pending Tuitions
+    const pendingTuitions = await tuitionsCollection.countDocuments({
+      tutorEmail: email,
+      approvalStatus: "pending",
+    });
+
+    res.status(200).send({
+      success: true,
+      stats: {
+        totalTuitions,
+        approvedTuitions,
+        totalApplicants,
+        pendingTuitions,
+      },
+    });
+
+  } catch (error) {
+    console.error("Tutor dashboard stats error:", error);
+
+    res.status(500).send({
+      success: false,
+      message: "Failed to fetch tutor dashboard statistics",
+    });
+  }
+});
 
 // Get Tutions by id
 app.patch("/tuitions/:id", async (req, res) => {
@@ -469,6 +719,7 @@ app.patch("/tuitions/:id", async (req, res) => {
     });
   }
 });
+
 // Get Tuition Details by ID
 app.get("/tuitions/:id", async (req, res) => {
   try {
@@ -578,7 +829,246 @@ app.patch("/tuitions/:id/status", async (req, res) => {
 });
 
 // Tuition ends
+const SUBSCRIPTION_PLANS = {
+  student: {
+    plan: "Pro",
+    priceUsd: 10,
+    unitAmount: 1000, // $10 in cents
+  },
+  tutor: {
+    plan: "Pro",
+    priceUsd: 15,
+    unitAmount: 1500, // $15 in cents
+  },
+};
+app.post("/payments/create-checkout-session", async (req, res) => {
+  try {
+    const { role, userEmail } = req.body;
+    const normalizedRole = String(role || "").toLowerCase();
 
+    const selectedPlan = SUBSCRIPTION_PLANS[normalizedRole];
+    if (!selectedPlan) {
+      return res.status(400).send({
+        success: false,
+        message: "Invalid role. Choose 'student' or 'tutor'.",
+      });
+    }
+
+    if (!userEmail) {
+      return res.status(400).send({
+        success: false,
+        message: "userEmail is required",
+      });
+    }
+
+    const origin =
+      req.headers.origin ||
+      process.env.DB_CLIENT_URL ||
+      "http://localhost:3000";
+
+    const session = await stripe.checkout.sessions.create({
+      mode: "payment",
+      customer_email: userEmail,
+      line_items: [
+        {
+          price_data: {
+            currency: "usd",
+            product_data: {
+              name: `MentorLagbe ${selectedPlan.plan} (${normalizedRole === "student" ? "Student" : "Tutor"})`,
+              description: `${selectedPlan.plan} subscription plan for ${normalizedRole}`,
+            },
+            unit_amount: selectedPlan.unitAmount,
+          },
+          quantity: 1,
+        },
+      ],
+      metadata: {
+        role: normalizedRole,
+        plan: selectedPlan.plan,
+        userEmail,
+      },
+      success_url: `${origin}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${origin}/checkout?canceled=true`,
+    });
+
+    await paymentsCollection.insertOne({
+      userEmail,
+      role: normalizedRole,
+      plan: selectedPlan.plan,
+      amount: selectedPlan.priceUsd,
+      currency: "USD",
+      stripeSessionId: session.id,
+      status: "pending",
+      paymentStatus: "pending",
+      createdAt: new Date(),
+    });
+
+    return res.status(200).send({
+      success: true,
+      url: session.url,
+      sessionId: session.id,
+    });
+  } catch (error) {
+    console.error("Create checkout session error:", error);
+    return res.status(500).send({
+      success: false,
+      message: error.message || "Failed to create checkout session",
+    });
+  }
+});
+
+// ==========================================
+// 2. STRIPE WEBHOOK (VERIFY PAYMENT)
+// POST /payments/webhook
+// ==========================================
+app.post(
+  "/payments/webhook",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
+    const sig = req.headers["stripe-signature"];
+
+    let event;
+    try {
+      event = stripe.webhooks.constructEvent(
+        req.body,
+        sig,
+        process.env.STRIPE_WEBHOOK_SECRET
+      );
+    } catch (err) {
+      console.error("Webhook signature verification failed:", err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    if (event.type === "checkout.session.completed") {
+      const session = event.data.object;
+      const userEmail = session.metadata?.userEmail || session.customer_email;
+      const role = session.metadata?.role;
+      const plan = session.metadata?.plan || "Pro";
+
+      await paymentsCollection.updateOne(
+        { stripeSessionId: session.id },
+        {
+          $set: {
+            status: "paid",
+            paymentStatus: "paid",
+            paidAt: new Date(),
+            stripePaymentIntentId: session.payment_intent || null,
+          },
+        }
+      );
+
+      if (userEmail) {
+        await usersCollection.updateOne(
+          { email: userEmail },
+          {
+            $set: {
+              subscriptionPlan: plan,
+              ...(role ? { role } : {}),
+              isPro: true,
+              updatedAt: new Date(),
+            },
+          }
+        );
+      }
+    }
+
+    return res.status(200).json({ received: true });
+  }
+);
+
+// ==========================================
+// 3. USER PAYMENT HISTORY
+// GET /payments?email=user@example.com
+// ==========================================
+app.get("/payments", async (req, res) => {
+  try {
+    const email = req.query.email || req.user?.email;
+
+    if (!email) {
+      return res.status(400).send({
+        success: false,
+        message: "Email is required to fetch payment history",
+      });
+    }
+
+    const payments = await paymentsCollection
+      .find({ userEmail: String(email) })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    return res.status(200).send({
+      success: true,
+      total: payments.length,
+      payments,
+    });
+  } catch (error) {
+    console.error("Get payments error:", error);
+    return res.status(500).send({
+      success: false,
+      message: "Failed to fetch payment history",
+    });
+  }
+});
+// strip end
+
+
+
+// Student server start
+// Student Dashboard Stats
+app.get("/dashboard/student/stats", async (req, res) => {
+  try {
+    const email = req.query.email;
+
+    if (!email) {
+      return res.status(400).send({
+        message: "Student email is required",
+      });
+    }
+
+    const student = await usersCollection.findOne({ email });
+
+    const filter = { studentEmail: email };
+
+    const [
+      totalApplications,
+      acceptedApplications,
+      pendingApplications,
+      recentApplications,
+    ] = await Promise.all([
+      applicationsCollection.countDocuments(filter),
+
+      applicationsCollection.countDocuments({
+        ...filter,
+        status: "accepted",
+      }),
+
+      applicationsCollection.countDocuments({
+        ...filter,
+        status: "pending",
+      }),
+
+      applicationsCollection
+        .find(filter)
+        .sort({ appliedAt: -1 })
+        .limit(5)
+        .toArray(),
+    ]);
+
+    res.send({
+      totalApplications,
+      acceptedApplications,
+      pendingApplications,
+      plan: student?.plan || "free",
+      recentApplications,
+    });
+  } catch (error) {
+    res.status(500).send({
+      message: "Failed to load student dashboard",
+    });
+  }
+});
+
+// Student server start
 
 
 // Start server
